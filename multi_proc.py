@@ -5,14 +5,14 @@ from contextlib import redirect_stdout, redirect_stderr
 import numpy as np
 import cvxpy
 import matplotlib.pyplot as plt
-sys.path.insert(0, os.path.join(os.getcwd(),'..'))
+sys.path.insert(0, 'C:/Users/jnka0003/Git repos/CIBUSmod')
 import CIBUSmod as cm
 from CIBUSmod.utils.helpers import check_constraints
 
 # Create session (Make sure that name and data_path match the notebook!)
 session = cm.Session(
     name = 'FORMAS',
-    data_path = '../CIBUSmod/data',
+    data_path = 'C:\\Users/jnka0003/Git repos/CIBUSmod/data',
     data_path_scenarios = 'scenarios_v2',
     data_path_output = 'output',
     timeout = 60 # Increase timeout to avoid failing to write if multiple processes try to write at the same time
@@ -46,10 +46,25 @@ waste = cm.WasteAndCircularity(
     par = cm.ParameterRetriever('WasteAndCircularity')
 )
 
+# Instantiate WasteAndCircularity
+waste = cm.WasteAndCircularity(
+    demand = demand,
+    crops = crops,
+    herds = herds,
+    par = cm.ParameterRetriever('WasteAndCircularity')
+)
+
 # Instantiate feed management
 feed_mgmt = cm.FeedMgmt(
     herds = herds,
     par = cm.ParameterRetriever('FeedMgmt')
+)
+
+# Instantiate by-product management
+byprod_mgmt = cm.ByProductMgmt(
+    demand = demand,
+    herds = herds,
+    par = cm.ParameterRetriever('ByProductMgmt')
 )
 
 # Instantiate manure management
@@ -64,6 +79,7 @@ manure_mgmt = cm.ManureMgmt(
 
 # Instantiate crop residue managment
 crop_residue_mgmt = cm.CropResidueMgmt(
+    demand = demand,
     crops = crops,
     herds = herds,
     par = cm.ParameterRetriever('CropResidueMgmt')
@@ -74,6 +90,7 @@ plant_nutrient_mgmt = cm.PlantNutrientMgmt(
     demand = demand,
     regions = regions,
     crops = crops,
+    waste = waste,
     herds = herds,
     par = cm.ParameterRetriever('PlantNutrientMgmt')
 )
@@ -82,6 +99,7 @@ plant_nutrient_mgmt = cm.PlantNutrientMgmt(
 machinery_and_energy_mgmt  = cm.MachineryAndEnergyMgmt(
     regions = regions,
     crops = crops,
+    waste = waste,
     herds = herds,
     par = cm.ParameterRetriever('MachineryAndEnergyMgmt')
 )
@@ -90,6 +108,7 @@ machinery_and_energy_mgmt  = cm.MachineryAndEnergyMgmt(
 inputs = cm.InputsMgmt(
     demand = demand,
     crops = crops,
+    waste = waste,
     herds = herds,
     par = cm.ParameterRetriever('InputsMgmt')
 )
@@ -228,7 +247,7 @@ def do_run(scn_year):
                     scale_power=0.4,
                     C8_crp = [ C8_SNG_P,   C8_SNG_PWT,   C8_SNG_M,   C8_FAL,   None   ],
                     C8_ani = [ None,       None,         None,       None,     C8_ani ],
-                    C8_rel = [ '>=',       '==',         '==',       '>=',     '<='   ],
+                    C8_rel = [ '>=',       '==',         '==',       '>=',     '=='   ],
                     verbose=True
                 )
 
@@ -239,7 +258,7 @@ def do_run(scn_year):
             # Get semi-natural grassland areas from first solution and add constraint on total
             # semi-natural grassland area for second optimization round
             sng_areas = geodist.x['crp'].loc[['Semi-natural pastures', 'Semi-natural pastures, thin soils', 'Semi-natural pastures, wooded']]
-            geodist.make_C9(C9_crp = sng_areas, C9_rel = '>=')
+            geodist.make_C9(C9_crp = sng_areas * 0.99, C9_rel = '>=') # Introduce a fair bit of slack to avoid unfeasible model
             geodist.make_C7()
 
             # Drop semi-natural grasslands from objective
@@ -254,12 +273,18 @@ def do_run(scn_year):
         
         # Redistribute feeds (not yet implemented) and calculate enteric CH4 emissions
         feed_mgmt.calculate2(verbose=True)
+
+        # Balance by-product demand and suply
+        byprod_mgmt.calculate(verbose=True)
         
         # Calculate manure
         manure_mgmt.calculate(verbose=True)
         
         # Calculate harvest of crop residues
         crop_residue_mgmt.calculate(verbose=True)
+
+        # Calculate treatment of wastes and other feedstocks
+        waste.calculate(verbose=True)
         
         # Calculate plant nutrient management
         plant_nutrient_mgmt.calculate(verbose=True)
@@ -274,12 +299,12 @@ def do_run(scn_year):
         try:
             session.store(
                 scn, year,
-                demand, regions, crops, herds, geodist
+                demand, regions, crops, herds, waste, geodist
             )
         except:
             session.store(
                 scn, year,
-                demand, regions, crops, herds, geodist
+                demand, regions, crops, herds, waste, geodist
             )
 
         t = time.time() - tic
