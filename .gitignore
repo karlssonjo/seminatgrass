@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+.vscode
+.venv*
+
+# Jupyter notebook
+.ipynb_checkpoints/
+
+# Excel temp files
+~$*
+
+# Large shapefiles
+*.shp
+*.prj
+*.shx
+*.dbf
+
+# Folder with temp dev files
+dev/
+
+# Ecoinvent files
+data/ecoinvent/*
+
+# Model output files
+*.pkl
+*.bz2
+*.sqlite
