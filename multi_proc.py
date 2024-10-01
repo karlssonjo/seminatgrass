@@ -22,7 +22,8 @@ session = cm.Session(
 
 # Instatiate Regions
 regions = cm.Regions(
-    par = cm.ParameterRetriever('Regions')
+    par = cm.ParameterRetriever('Regions'),
+    settings = {'max_land_use_from_scenario_x0' : True}
 )
 
 # Instantiate DemandAndConversions
