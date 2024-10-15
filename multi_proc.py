@@ -126,28 +126,6 @@ geodist = cm.GeoDistributor(
     par = cm.ParameterRetriever('GeoDistributor')
 )
 
-def _max_sng_obj(geodist):
-    geodist.define_cvx_problem()
-
-    # Get x variable
-    x = geodist.problem.variables()[0]
-
-    # Create objective
-    rel = cm.ParameterRetriever.get_rel('crop','land_use')
-    P = np.concatenate([
-        np.zeros(len(geodist.x_idx_short['ani'])),
-        np.array([1 if rel[cr] == 'semi-natural grasslands' else 0 for cr,_,_ in geodist.x_idx_short['crp']])
-    ])
-    obj = cvxpy.Maximize(
-        cvxpy.sum(cvxpy.multiply(P, x))
-    )
-    
-    # Create problem
-    geodist.problem = cvxpy.Problem(
-        objective = obj,
-        constraints = geodist.problem.constraints
-    )
-
 def _make_ani_cons(geodist, name, M, b, rel):
     
     from CIBUSmod.optimisation.geo_dist import IndexedMatrix
@@ -325,20 +303,19 @@ def do_run(scn_year):
             _make_milkmeat_cons(geodist, baseline_milkmeat)
             _make_beeflamb_cons(geodist, baseline_beeflamb)
         
-            # First we solve with the obejctive of maximising semi-natural grassland area
-            _max_sng_obj(geodist)
+            # First we solve while dropping everything from the
+            # obejctive except for semi-natural grasslands
+            for w in ['ani','crp']:
+                for k in geodist.x0_idx[w].unique(0):
+                    if k not in ['Semi-natural pastures', 'Semi-natural pastures, wooded', 'Semi-natural pastures, thin soils', 'Semi-natural meadows']:
+                        cm.helpers.drop_from_objective(geodist, which=w, key=k)
             geodist.solve(apply_solution=False, verbose=True)
         
-            # Get semi-natural grassland areas from first solution and add constraint on total
-            # semi-natural grassland area for second optimization round
+            # Get semi-natural grassland areas from first solution and add constraint
+            # semi-natural grassland area per region for second optimization round
             sng_areas = geodist.x['crp'].loc[['Semi-natural pastures', 'Semi-natural pastures, thin soils', 'Semi-natural pastures, wooded']]
-            geodist.make_C9(C9_crp = sng_areas * 0.99, C9_rel = '>=') # Introduce a fair bit of slack to avoid unfeasible model
+            geodist.make_C8(C8_crp = sng_areas, C8_rel = '>=') 
             geodist.make_C7()
-        
-            # Drop semi-natural grasslands from objective
-            cm.helpers.drop_from_objective(geodist, 'crp', 'Semi-natural pastures')
-            cm.helpers.drop_from_objective(geodist, 'crp', 'Semi-natural pastures, thin soils')
-            cm.helpers.drop_from_objective(geodist, 'crp', 'Semi-natural pastures, wooded')
         
             # Solve optimisation problem again, this time minimising deviation from current
             # crop areas and animal numbers
