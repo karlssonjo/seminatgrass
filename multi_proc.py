@@ -232,24 +232,24 @@ def do_run(scn_year):
         # Calculate feed
         feed_mgmt.calculate(verbose=True)
     
-        if scn != 'baseline':
+        if scn != 'BL':
             while True:
                 try:
                     # Get baseline crop areas, animal numbers and land use
-                    baseline_ani = session.get_attr('geo','x_animals', scn='baseline').iloc[0]
-                    baseline_crp = session.get_attr('geo','x_crops', scn='baseline').iloc[0]
-                    baseline_lu = session.get_attr('c','area',{'region':None, 'crop':'land_use'}, scn='baseline').iloc[0].unstack()
+                    baseline_ani = session.get_attr('geo','x_animals', scn='BL').iloc[0]
+                    baseline_crp = session.get_attr('geo','x_crops', scn='BL').iloc[0]
+                    baseline_lu = session.get_attr('c','area',{'region':None, 'crop':'land_use'}, scn='BL').iloc[0].unstack()
                     # Get baseline CH4 emissions
                     baseline_CH4 = session.get_attr(
                         'A', 'enteric_methane',
                         'none',
-                        scn='baseline'
+                        scn='BL'
                     ).iloc[0]
                     # Get baseline milk/meat
-                    prod = session.get_attr('A', 'prod', ['species', 'animal_prod'], scn='baseline').iloc[0]
+                    prod = session.get_attr('A', 'prod', ['species', 'animal_prod'], scn='BL').iloc[0]
                     baseline_milkmeat = prod[('cattle','milk')] / prod[('cattle','meat')]
                     # Get baseline beef/lamb
-                    prod = session.get_attr('A', 'prod', ['species','animal_prod'], scn='baseline').iloc[0]
+                    prod = session.get_attr('A', 'prod', ['species','animal_prod'], scn='BL').iloc[0]
                     baseline_beeflamb = prod[('cattle','meat')] / prod[('sheep','meat')]
                 except:
                     time.sleep(10)
@@ -258,7 +258,7 @@ def do_run(scn_year):
         
         # Distribute animals and crops
         # Make optimisation problem
-        if scn == 'baseline':
+        if scn == 'BL':
             geodist.make(
                 use_cons=[1,2,3,4,5,6,7],
                 scale_power=0.4,
@@ -285,15 +285,17 @@ def do_run(scn_year):
             C8_SNG_M = baseline_crp.copy()\
             .loc[['Semi-natural meadows']]
             C8_FAL = baseline_crp.copy()\
-            .loc[['Fallow', 'Ley not harvested']]# * 0.8
+            .loc[['Fallow', 'Ley not harvested']]
+            C8_FOD = baseline_crp.copy()\
+            .loc[['Cereals for fodder', 'Other crops for fodder']]
             C8_ani = baseline_ani.copy()
         
             geodist.make(
                 use_cons=[1,2,3,4,5,6,7,8],
                 scale_power=0.4,
-                C8_crp = [ C8_SNG_P,   C8_SNG_PWT,   C8_SNG_M,   C8_FAL,   None                    ],
-                C8_ani = [ None,       None,         None,       None,     C8_ani.loc[['horses']]  ],
-                C8_rel = [ '>=',       '==',         '==',       '>=',     '=='                    ],
+                C8_crp = [ C8_SNG_P,   C8_SNG_PWT,   C8_SNG_M,   C8_FAL,  C8_FOD,   None                                     ],
+                C8_ani = [ None,       None,         None,       None,    None,     C8_ani.loc[['horses','pigs','poultry']]  ],
+                C8_rel = [ '>=',       '==',         '==',       '>=',    '<=',     '=='                                     ],
                 verbose=True
             )
             
