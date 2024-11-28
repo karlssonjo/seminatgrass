@@ -1,130 +1,16 @@
 import sys
 import os
 import time
+
 from contextlib import redirect_stdout, redirect_stderr
+
 import pandas as pd
-import numpy as np
 import scipy
-import cvxpy
 import matplotlib.pyplot as plt
+
 sys.path.insert(0, 'C:/Users/jnka0003/Git repos/CIBUSmod')
 import CIBUSmod as cm
 from CIBUSmod.utils.helpers import check_constraints
-
-# Create session (Make sure that name and data_path match the notebook!)
-session = cm.Session(
-    name = 'FORMAS',
-    data_path = 'C:\\Users/jnka0003/Git repos/CIBUSmod/data',
-    data_path_scenarios = 'scenarios',
-    data_path_output = 'output',
-    timeout = 60 # Increase timeout to avoid failing to write if multiple processes try to write at the same time
-)
-
-# Instatiate Regions
-regions = cm.Regions(
-    par = cm.ParameterRetriever('Regions'),
-    settings = {'max_land_use_from_scenario_x0' : True}
-)
-
-# Instantiate DemandAndConversions
-demand = cm.DemandAndConversions(
-    par = cm.ParameterRetriever('DemandAndConversions')
-)
-
-# Instantiate CropProduction
-crops = cm.CropProduction(
-    par = cm.ParameterRetriever('CropProduction'),
-    index = regions.data_attr.get('x0_crops').index
-)    
-
-# Instantiate AnimalHerds
-# Each AnimalHerd object is stored in an indexed pandas.Series
-herds = cm.make_herds(regions)
-
-# Instantiate WasteAndCircularity
-waste = cm.WasteAndCircularity(
-    demand = demand,
-    crops = crops,
-    herds = herds,
-    par = cm.ParameterRetriever('WasteAndCircularity')
-)
-
-# Instantiate WasteAndCircularity
-waste = cm.WasteAndCircularity(
-    demand = demand,
-    crops = crops,
-    herds = herds,
-    par = cm.ParameterRetriever('WasteAndCircularity')
-)
-
-# Instantiate feed management
-feed_mgmt = cm.FeedMgmt(
-    herds = herds,
-    par = cm.ParameterRetriever('FeedMgmt')
-)
-
-# Instantiate by-product management
-byprod_mgmt = cm.ByProductMgmt(
-    demand = demand,
-    herds = herds,
-    par = cm.ParameterRetriever('ByProductMgmt')
-)
-
-# Instantiate manure management
-manure_mgmt = cm.ManureMgmt(
-    herds = herds,
-    feed_mgmt = feed_mgmt,
-    par = cm.ParameterRetriever('ManureMgmt'),
-    settings = {
-        'NPK_excretion_from_balance' : True
-    }
-)
-
-# Instantiate crop residue managment
-crop_residue_mgmt = cm.CropResidueMgmt(
-    demand = demand,
-    crops = crops,
-    herds = herds,
-    par = cm.ParameterRetriever('CropResidueMgmt')
-)
-
-# Instantiate plant nutrient management
-plant_nutrient_mgmt = cm.PlantNutrientMgmt(
-    demand = demand,
-    regions = regions,
-    crops = crops,
-    waste = waste,
-    herds = herds,
-    par = cm.ParameterRetriever('PlantNutrientMgmt')
-)
-
-# Instatiate machinery and energy management
-machinery_and_energy_mgmt  = cm.MachineryAndEnergyMgmt(
-    regions = regions,
-    crops = crops,
-    waste = waste,
-    herds = herds,
-    par = cm.ParameterRetriever('MachineryAndEnergyMgmt')
-)
-
-# Instatiate inputs management
-inputs = cm.InputsMgmt(
-    demand = demand,
-    crops = crops,
-    waste = waste,
-    herds = herds,
-    par = cm.ParameterRetriever('InputsMgmt')
-)
-
-# Instantiate geo distributor
-geodist = cm.GeoDistributor(
-    regions = regions,
-    demand = demand,
-    crops = crops,
-    herds = herds,
-    feed_mgmt = feed_mgmt,
-    par = cm.ParameterRetriever('GeoDistributor')
-)
 
 def _make_ani_cons(geodist, name, M, b, rel):
     
@@ -166,7 +52,7 @@ def _get_herds_par(herds, attr):
 
     return res
 
-def _make_CH4_cons(geodist, feed_mgmt, baseline_CH4, factor):
+def _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, factor):
     
     feed_mgmt.calculate2()
     
@@ -180,7 +66,7 @@ def _make_CH4_cons(geodist, feed_mgmt, baseline_CH4, factor):
 
     return None
 
-def _make_milkmeat_cons(geodist, baseline_milkmeat):
+def _make_milkmeat_cons(herds, geodist, baseline_milkmeat):
 
     # Get milk and meat prod. per defining animal
     meat = _get_herds_par(herds, 'production').xs('meat', level='animal_prod', axis=1).sum(axis=1).xs('cattle', drop_level=False).reindex(geodist.x_idx_short['ani'], fill_value=0)
@@ -190,7 +76,7 @@ def _make_milkmeat_cons(geodist, baseline_milkmeat):
 
     return None
 
-def _make_beeflamb_cons(geodist, baseline_beeflamb):
+def _make_beeflamb_cons(herds, geodist, baseline_beeflamb):
 
     # Get beef and lamb prod. per defining animal
     beef = _get_herds_par(herds, 'production').xs('meat', level='animal_prod', axis=1).sum(axis=1).xs('cattle', drop_level=False).reindex(geodist.x_idx_short['ani'], fill_value=0)
@@ -200,15 +86,163 @@ def _make_beeflamb_cons(geodist, baseline_beeflamb):
 
     return None
 
-def do_run(scn_year):
-    scn, year = scn_year
-    tic = time.time()
+def do_run(session, scn_year):
 
-    with open(os.path.join(session.data_path_output, 'log', f'{scn}_{year}.log'), 'w') as f,\
+    # Activate session in environment
+    session.activate()
+
+    scn, year = scn_year
+
+    # Create log folder if it does not exist
+    log_path = os.path.join(session.data_path_output, 'log')
+    if not os.path.exists(log_path):
+        os.makedirs(log_path)
+
+    with open(os.path.join(log_path, f'{scn}_{year}.log'), 'w') as f,\
         redirect_stdout(f), redirect_stderr(f):
 
-        scn_str = f'Scenario: {scn}, {year}'
-        print(f'\n{"-"*len(scn_str)}\n{scn_str}\n{"-"*len(scn_str)}\n')
+        print(session.data_path)
+
+        tic = time.time()
+    
+        # Increase timeout to avoid failing to write if multiple processes try to write at the same time
+        session.db_timeout = 60
+
+        ###############################
+        ###   INSTANTIATE MODULES   ###
+        ###############################
+
+        print('CREATING MODULES')
+
+        # Instatiate Regions
+        regions = cm.Regions(
+            par = cm.ParameterRetriever('Regions'),
+            settings = {'max_land_use_from_scenario_x0' : True}
+        )
+
+        # Instantiate DemandAndConversions
+        demand = cm.DemandAndConversions(
+            par = cm.ParameterRetriever('DemandAndConversions')
+        )
+
+        # Instantiate CropProduction
+        crops = cm.CropProduction(
+            par = cm.ParameterRetriever('CropProduction'),
+            index = regions.data_attr.get('x0_crops').index
+        )    
+
+        # Instantiate AnimalHerds
+        # Each AnimalHerd object is stored in an indexed pandas.Series
+        herds = cm.make_herds(regions)
+
+        # If Nature conservation horses scenario add new horse breed
+        if session[scn]['scenario_workbooks'] is not None and 'NAT_HORSES' in session[scn]['scenario_workbooks']:
+            h = cm.HorseHerd(
+                par = cm.ParameterRetriever('HorseHerd'),
+                index = regions.data_attr.get('x0_animals').index.get_level_values('region').unique(),
+                breed = 'conservation horses',
+                prod_system = 'conventional',
+                sub_system = 'none'
+            )
+            s = pd.Series(
+                [h],
+                index = pd.MultiIndex.from_tuples(
+                    [(h.species, h.breed, h.prod_system, h.sub_system)],
+                    names = ['species','breed','prod_system','sub_system']
+                )
+            )
+            herds = pd.concat([herds, s])
+
+        # Instantiate WasteAndCircularity
+        waste = cm.WasteAndCircularity(
+            demand = demand,
+            crops = crops,
+            herds = herds,
+            par = cm.ParameterRetriever('WasteAndCircularity')
+        )
+
+        # Instantiate WasteAndCircularity
+        waste = cm.WasteAndCircularity(
+            demand = demand,
+            crops = crops,
+            herds = herds,
+            par = cm.ParameterRetriever('WasteAndCircularity')
+        )
+
+        # Instantiate feed management
+        feed_mgmt = cm.FeedMgmt(
+            herds = herds,
+            par = cm.ParameterRetriever('FeedMgmt')
+        )
+
+        # Instantiate by-product management
+        byprod_mgmt = cm.ByProductMgmt(
+            demand = demand,
+            herds = herds,
+            par = cm.ParameterRetriever('ByProductMgmt')
+        )
+
+        # Instantiate manure management
+        manure_mgmt = cm.ManureMgmt(
+            herds = herds,
+            feed_mgmt = feed_mgmt,
+            par = cm.ParameterRetriever('ManureMgmt'),
+            settings = {
+                'NPK_excretion_from_balance' : True
+            }
+        )
+
+        # Instantiate crop residue managment
+        crop_residue_mgmt = cm.CropResidueMgmt(
+            demand = demand,
+            crops = crops,
+            herds = herds,
+            par = cm.ParameterRetriever('CropResidueMgmt')
+        )
+
+        # Instantiate plant nutrient management
+        plant_nutrient_mgmt = cm.PlantNutrientMgmt(
+            demand = demand,
+            regions = regions,
+            crops = crops,
+            waste = waste,
+            herds = herds,
+            par = cm.ParameterRetriever('PlantNutrientMgmt')
+        )
+
+        # Instatiate machinery and energy management
+        machinery_and_energy_mgmt  = cm.MachineryAndEnergyMgmt(
+            regions = regions,
+            crops = crops,
+            waste = waste,
+            herds = herds,
+            par = cm.ParameterRetriever('MachineryAndEnergyMgmt')
+        )
+
+        # Instatiate inputs management
+        inputs = cm.InputsMgmt(
+            demand = demand,
+            crops = crops,
+            waste = waste,
+            herds = herds,
+            par = cm.ParameterRetriever('InputsMgmt')
+        )
+
+        # Instantiate geo distributor
+        geodist = cm.GeoDistributor(
+            regions = regions,
+            demand = demand,
+            crops = crops,
+            herds = herds,
+            feed_mgmt = feed_mgmt,
+            par = cm.ParameterRetriever('GeoDistributor')
+        )
+
+        ############################
+        ###   RUN CALCULATIONS   ###
+        ############################
+
+        print('STARTING MODEL RUN')
         
         # Update all parameter values
         cm.ParameterRetriever.update_all_parameter_values(
@@ -231,7 +265,8 @@ def do_run(scn_year):
         
         # Calculate feed
         feed_mgmt.calculate(verbose=True)
-    
+
+        # Get data from baseline
         if scn != 'BL':
             while True:
                 try:
@@ -301,9 +336,9 @@ def do_run(scn_year):
             
             # Add constraint on CH4 emissions and milk/meat
             CH4_factor = float(year)/100
-            _make_CH4_cons(geodist, feed_mgmt, baseline_CH4, CH4_factor)
-            _make_milkmeat_cons(geodist, baseline_milkmeat)
-            _make_beeflamb_cons(geodist, baseline_beeflamb)
+            _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, CH4_factor)
+            _make_milkmeat_cons(herds, geodist, baseline_milkmeat)
+            _make_beeflamb_cons(herds, geodist, baseline_beeflamb)
         
             # First we solve while dropping everything from the
             # obejctive except for semi-natural grasslands
