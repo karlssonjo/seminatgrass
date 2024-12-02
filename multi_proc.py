@@ -12,6 +12,116 @@ sys.path.insert(0, 'C:/Users/jnka0003/Git repos/CIBUSmod')
 import CIBUSmod as cm
 from CIBUSmod.utils.helpers import check_constraints
 
+# Regions south of around 60 degrees north
+south_of_60 = pd.Series({
+    '111':True,
+    '112':True,
+    '311':True,
+    '312':True,
+    '321':True,
+    '322':True,
+    '411':True,
+    '421':True,
+    '422':True,
+    '431':True,
+    '511':True,
+    '512':True,
+    '513':True,
+    '514':True,
+    '515':True,
+    '521':True,
+    '611':True,
+    '612':True,
+    '621':True,
+    '622':True,
+    '711':True,
+    '731':True,
+    '811':True,
+    '812':True,
+    '813':True,
+    '814':True,
+    '821':True,
+    '831':True,
+    '911':True,
+    '912':True,
+    '913':True,
+    '1011':True,
+    '1111':True,
+    '1112':True,
+    '1121':True,
+    '1122':True,
+    '1123':True,
+    '1124':True,
+    '1131':True,
+    '1211':True,
+    '1212':True,
+    '1213':True,
+    '1214':True,
+    '1215':True,
+    '1216':True,
+    '1221':True,
+    '1222':True,
+    '1311':True,
+    '1321':True,
+    '1322':True,
+    '1331':True,
+    '1411':True,
+    '1412':True,
+    '1421':True,
+    '1511':True,
+    '1512':True,
+    '1521':True,
+    '1522':True,
+    '1611':True,
+    '1612':True,
+    '1613':True,
+    '1614':True,
+    '1615':True,
+    '1616':True,
+    '1617':True,
+    '1621':True,
+    '1622':True,
+    '1623':True,
+    '1711':True,
+    '1712':True,
+    '1713':True,
+    '1721':True,
+    '1722':True,
+    '1723':True,
+    '1724':False,
+    '1811':True,
+    '1812':True,
+    '1813':True,
+    '1821':True,
+    '1911':True,
+    '1912':True,
+    '1921':True,
+    '1922':True,
+    '2011':False,
+    '2012':False,
+    '2019':False,
+    '2111':False,
+    '2121':False,
+    '2122':False,
+    '2211':False,
+    '2212':False,
+    '2221':False,
+    '2311':False,
+    '2312':False,
+    '2319':False,
+    '2331':False,
+    '2411':False,
+    '2412':False,
+    '2413':False,
+    '2414':False,
+    '2415':False,
+    '2419':False,
+    '2511':False,
+    '2512':False,
+    '2519':False,
+    '2521':False
+}).rename_axis('region')
+
 def _make_ani_cons(geodist, name, M, b, rel):
     
     from CIBUSmod.optimisation.geo_dist import IndexedMatrix
@@ -137,6 +247,7 @@ def do_run(session, scn_year):
 
         # If Nature conservation horses scenario add new horse breed
         if session[scn]['scenario_workbooks'] is not None and 'NAT_HORSES' in session[scn]['scenario_workbooks']:
+            nat_horses = True
             h = cm.HorseHerd(
                 par = cm.ParameterRetriever('HorseHerd'),
                 index = regions.data_attr.get('x0_animals').index.get_level_values('region').unique(),
@@ -152,6 +263,8 @@ def do_run(session, scn_year):
                 )
             )
             herds = pd.concat([herds, s])
+        else:
+            nat_horses = False
 
         # Instantiate WasteAndCircularity
         waste = cm.WasteAndCircularity(
@@ -325,39 +438,65 @@ def do_run(session, scn_year):
             .loc[['Cereals for fodder', 'Other crops for fodder']]
             C8_ani = baseline_ani.copy()
         
-            geodist.make(
-                use_cons=[1,2,3,4,5,6,7,8],
-                scale_power=0.4,
-                C8_crp = [ C8_SNG_P,   C8_SNG_PWT,   C8_SNG_M,   C8_FAL,  C8_FOD,   None                                     ],
-                C8_ani = [ None,       None,         None,       None,    None,     C8_ani.loc[['horses','pigs','poultry']]  ],
-                C8_rel = [ '>=',       '==',         '==',       '>=',    '<=',     '=='                                     ],
-                verbose=True
-            )
-            
-            # Add constraint on CH4 emissions and milk/meat
-            CH4_factor = float(year)/100
-            _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, CH4_factor)
-            _make_milkmeat_cons(herds, geodist, baseline_milkmeat)
-            _make_beeflamb_cons(herds, geodist, baseline_beeflamb)
-        
-            # First we solve while dropping everything from the
-            # obejctive except for semi-natural grasslands
-            for w in ['ani','crp']:
-                for k in geodist.x0_idx[w].unique(0):
-                    if k not in ['Semi-natural pastures', 'Semi-natural pastures, wooded', 'Semi-natural pastures, thin soils', 'Semi-natural meadows']:
-                        cm.helpers.drop_from_objective(geodist, which=w, key=k)
-            geodist.solve(apply_solution=False, verbose=True)
-        
-            # Get semi-natural grassland areas from first solution and add constraint
-            # semi-natural grassland area per region for second optimization round
-            sng_areas = geodist.x['crp'].loc[['Semi-natural pastures', 'Semi-natural pastures, thin soils', 'Semi-natural pastures, wooded']]
-            geodist.make_C8(C8_crp = sng_areas, C8_rel = '>=') 
-            geodist.make_C7()
-        
-            # Solve optimisation problem again, this time minimising deviation from current
-            # crop areas and animal numbers
-            geodist.define_cvx_problem()
-            geodist.solve(verbose=True)
+            for opt_nr in [1,2]:
+                print(f'Optimisation round #{opt_nr}')
+                geodist.make(
+                    use_cons=[1,2,3,4,5,6,7,8],
+                    scale_power=0.4,
+                    C8_crp = [ C8_SNG_P,   C8_SNG_PWT,   C8_SNG_M,   C8_FAL,  C8_FOD,   None                                     ],
+                    C8_ani = [ None,       None,         None,       None,    None,     C8_ani.loc[['horses','pigs','poultry']]  ],
+                    C8_rel = [ '>=',       '==',         '==',       '>=',    '<=',     '=='                                     ],
+                    verbose=True
+                )
+
+                if nat_horses:
+                    # No nature conservation hoses below ~60 degrees north
+                    idx = pd.IndexSlice
+                    nat_horses_lim = pd.Series(
+                        0.0,
+                        index = geodist.x_idx['ani'].to_frame()
+                        .loc[idx[
+                            ['horses'],
+                            ['conservation horses'],
+                            :,
+                            :,
+                            south_of_60[~south_of_60].index
+                        ]].index
+                    )
+                    geodist.make_C8(
+                        C8_ani = nat_horses_lim,
+                        C8_rel = '<='
+                    )
+                    geodist.make_C7()
+                    
+                
+                # Add constraint on CH4 emissions and milk/meat
+                CH4_factor = float(year)/100
+                _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, CH4_factor)
+                _make_milkmeat_cons(herds, geodist, baseline_milkmeat)
+                _make_beeflamb_cons(herds, geodist, baseline_beeflamb)
+
+                if opt_nr == 1:
+                    # First we solve while dropping everything from the
+                    # obejctive except for semi-natural grasslands
+                    for w in ['ani','crp']:
+                        for k in geodist.x0_idx[w].unique(0):
+                            if k not in ['Semi-natural pastures', 'Semi-natural pastures, wooded', 'Semi-natural pastures, thin soils', 'Semi-natural meadows']:
+                                cm.helpers.drop_from_objective(geodist, which=w, key=k)
+                    geodist.solve(apply_solution=False, verbose=True)
+                    
+                    # Get semi-natural grassland areas from first solution to constrain
+                    # semi-natural grassland area per region for second optimization round
+                    tol = 0.001
+                    C8_SNG_P = geodist.x['crp'].loc[['Semi-natural pastures']] * (1-tol)
+                    sng_areas = geodist.x['crp'].loc[['Semi-natural pastures', 'Semi-natural pastures, thin soils', 'Semi-natural pastures, wooded']]
+                    print(f'SNG area: {sng_areas.sum()/1_000_000:.2f} Mha')
+                elif opt_nr == 2:           
+                    # Solve optimisation problem again, this time minimising deviation from current
+                    # crop areas and animal numbers
+                    geodist.solve(solver_settings={'solver':'GUROBI', 'BarConvTol':1e-6}, verbose=True)
+                    sng_areas = geodist.x['crp'].loc[['Semi-natural pastures', 'Semi-natural pastures, thin soils', 'Semi-natural pastures, wooded']]
+                    print(f'SNG area: {sng_areas.sum()/1_000_000:.2f} Mha')
         
         # Redistribute feeds (not yet implemented) and calculate enteric CH4 emissions
         feed_mgmt.calculate2(verbose=True)
