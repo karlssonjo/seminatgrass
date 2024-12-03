@@ -462,7 +462,7 @@ def do_run(session, scn_year):
                 print(f'Optimisation round #{opt_nr}')
                 geodist.make(
                     use_cons=[1,2,3,4,5,6,7,8],
-                    scale_power=0.4,
+                    scale_power=0 if opt_nr == 1 else 0.4,
                     C8_crp = [ C8_SNG_P,   C8_SNG_PWT,   C8_SNG_M,   C8_FAL,  C8_FOD,   None                                     ],
                     C8_ani = [ None,       None,         None,       None,    None,     C8_ani.loc[['horses','pigs','poultry']]  ],
                     C8_rel = [ '>=',       '==',         '==',       '>=',    '<=',     '=='                                     ],
@@ -515,13 +515,14 @@ def do_run(session, scn_year):
                 elif opt_nr == 2:           
                     # Solve optimisation problem again, this time minimising deviation from current
                     # crop areas and animal numbers
-                    for tol in [1e-8, 1e-7, 5e-7, 1e-6, 5e-6]:
+                    for tol in [1e-8, 1e-7, 5e-7, 1e-6, 5e-6, 1e-5]:
                         try:
+                            print(f'BarConvTol = {tol:.1e}')
                             geodist.solve(solver_settings={'solver':'GUROBI', 'BarConvTol':tol}, verbose=True)
                         except:
+                            print('')
                             continue
-                        finally:
-                            print(f'BarConvTol = {tol:.1e}')
+                        else:
                             break
                     sng_areas = geodist.x['crp'].loc[['Semi-natural pastures', 'Semi-natural pastures, thin soils', 'Semi-natural pastures, wooded']]
                     print(f'SNG area: {sng_areas.sum()/1_000_000:.2f} Mha')
