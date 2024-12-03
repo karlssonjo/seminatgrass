@@ -125,17 +125,22 @@ south_of_60 = pd.Series({
 def _make_ani_cons(geodist, name, M, b, rel):
     
     from CIBUSmod.optimisation.geo_dist import IndexedMatrix
-    
+
+    if isinstance(M, pd.DataFrame):
+        row_idx = M.index
+    else:
+        row_idx = pd.Index([name])
+
     # Create A matrix
     M = scipy.sparse.csc_matrix(M)
     Z = scipy.sparse.csc_matrix((M.shape[0],len(geodist.x_idx_short['crp']))) # Zero matrix
     A = scipy.sparse.hstack([M,Z], format='csc')
     A = IndexedMatrix(
         matrix=A,
-        row_idx=pd.Index([name]),
+        row_idx=row_idx,
         col_idx={k:v.copy() for k,v in geodist.x_idx_short.items()}
     )
-    
+
     # Append constraint
     geodist.constraints.update({f'{name}: A @ x {rel} b' : {
         'left' : lambda x,A: A.M @ x,
@@ -186,6 +191,18 @@ def _make_milkmeat_cons(herds, geodist, baseline_milkmeat):
 
     return None
 
+def _make_orgcon_cons(geodist, baseline_org_per_con):
+    
+    d = [[(-1/baseline_org_per_con.loc[sp,br] if ps=='organic' else 1) if (sp==sp2) and (br==br2) else 0 for sp,br,ps,_,_ in geodist.x_idx_short['ani']] for sp2,br2 in baseline_org_per_con.index]
+    M = pd.DataFrame(
+        d,
+        index = baseline_org_per_con.index,
+        columns = geodist.x_idx_short['ani']
+    )
+    _make_ani_cons(geodist, name='org/con', M=M, b=0, rel='==')
+    
+    return None
+
 def _make_beeflamb_cons(herds, geodist, baseline_beeflamb):
 
     # Get beef and lamb prod. per defining animal
@@ -214,7 +231,7 @@ def do_run(session, scn_year):
         print(session.data_path)
 
         tic = time.time()
-    
+
         # Increase timeout to avoid failing to write if multiple processes try to write at the same time
         session.db_timeout = 60
 
@@ -356,26 +373,26 @@ def do_run(session, scn_year):
         ############################
 
         print('STARTING MODEL RUN')
-        
+
         # Update all parameter values
         cm.ParameterRetriever.update_all_parameter_values(
             **session[scn],
             year = year
         )
-        
+
         # Get region attributes
         regions.calculate(verbose=True)
-        
+
         # Calculate food demand
         demand.calculate(verbose=True)
-        
+
         # Calculate crops
         crops.calculate(verbose=True)
-        
+
         # Calculate herds
         for h in herds:
             h.calculate(verbose=True)
-        
+
         # Calculate feed
         feed_mgmt.calculate(verbose=True)
 
@@ -399,11 +416,14 @@ def do_run(session, scn_year):
                     # Get baseline beef/lamb
                     prod = session.get_attr('A', 'prod', ['species','animal_prod'], scn='BL').iloc[0]
                     baseline_beeflamb = prod[('cattle','meat')] / prod[('sheep','meat')]
+                    # Get baseline org/con
+                    heads = session.get_attr('G','x_ani',['species','breed','prod_system'], scn='BL').iloc[0].loc[['cattle','sheep']]
+                    baseline_org_per_con = (heads.xs('organic', level='prod_system') / heads.xs('conventional', level='prod_system'))
                 except:
                     time.sleep(10)
                 else:
                     break
-        
+
         # Distribute animals and crops
         # Make optimisation problem
         if scn == 'BL':
@@ -421,10 +441,10 @@ def do_run(session, scn_year):
                 demand.data_attr.get('animal_prod_demand')
                 .loc[(slice(None),['pigs','poultry'],slice(None))]
             )
-        
+
             # Set maximum cropland and greenhouse area to baseline levels
             regions.data_attr.get('max_land_use').update(baseline_lu.loc[:,['cropland','greenhouse']])
-        
+
             # Baseline Semi-natural grassland areas
             C8_SNG_P = baseline_crp.copy()\
             .loc[['Semi-natural pastures']]
@@ -437,7 +457,7 @@ def do_run(session, scn_year):
             C8_FOD = baseline_crp.copy()\
             .loc[['Cereals for fodder', 'Other crops for fodder']]
             C8_ani = baseline_ani.copy()
-        
+
             for opt_nr in [1,2]:
                 print(f'Optimisation round #{opt_nr}')
                 geodist.make(
@@ -475,6 +495,7 @@ def do_run(session, scn_year):
                 _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, CH4_factor)
                 _make_milkmeat_cons(herds, geodist, baseline_milkmeat)
                 _make_beeflamb_cons(herds, geodist, baseline_beeflamb)
+                _make_orgcon_cons(geodist, baseline_org_per_con)
 
                 if opt_nr == 1:
                     # First we solve while dropping everything from the
@@ -494,34 +515,41 @@ def do_run(session, scn_year):
                 elif opt_nr == 2:           
                     # Solve optimisation problem again, this time minimising deviation from current
                     # crop areas and animal numbers
-                    geodist.solve(solver_settings={'solver':'GUROBI', 'BarConvTol':1e-6}, verbose=True)
+                    for tol in [1e-8, 1e-7, 5e-7, 1e-6, 5e-6]:
+                        try:
+                            geodist.solve(solver_settings={'solver':'GUROBI', 'BarConvTol':tol}, verbose=True)
+                        except:
+                            continue
+                        finally:
+                            print(f'BarConvTol = {tol:.1e}')
+                            break
                     sng_areas = geodist.x['crp'].loc[['Semi-natural pastures', 'Semi-natural pastures, thin soils', 'Semi-natural pastures, wooded']]
                     print(f'SNG area: {sng_areas.sum()/1_000_000:.2f} Mha')
-        
+
         # Redistribute feeds (not yet implemented) and calculate enteric CH4 emissions
         feed_mgmt.calculate2(verbose=True)
-        
+
         # Balance by-product demand and suply
         byprod_mgmt.calculate(verbose=True)
-        
+
         # Calculate manure
         manure_mgmt.calculate(verbose=True)
-        
+
         # Calculate harvest of crop residues
         crop_residue_mgmt.calculate(verbose=True)
-        
+
         # Calculate treatment of wastes and other feedstocks
         waste.calculate(verbose=True)
-        
+
         # Calculate plant nutrient management
         plant_nutrient_mgmt.calculate(verbose=True)
-        
+
         # Calculate energy requirements
         machinery_and_energy_mgmt.calculate(verbose=True)
-        
+
         # Calculate inputs supply chain emissions
         inputs.calculate(verbose=True)
-        
+
         # Store results (try again if first atempt fails)
         try:
             session.store(
