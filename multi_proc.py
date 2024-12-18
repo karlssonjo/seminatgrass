@@ -5,6 +5,7 @@ import time
 from contextlib import redirect_stdout, redirect_stderr
 
 import pandas as pd
+import numpy as np
 import scipy
 import matplotlib.pyplot as plt
 
@@ -122,6 +123,48 @@ south_of_60 = pd.Series({
     '2521':False
 }).rename_axis('region')
 
+def _max_sng_obj_alt1(crops, geodist):
+
+    import cvxpy
+
+    print('Making max SNG objective (alt. 1) ...')
+
+    yields = crops.data_attr.get('harvest')
+
+    geodist.define_cvx_problem()
+
+    # Get x variable
+    x = geodist.problem.variables()[0]
+
+    # Create objective
+    rel = cm.ParameterRetriever.get_rel('crop','land_use')
+    P = np.concatenate([
+        np.zeros(len(geodist.x_idx_short['ani'])),
+        np.array([yields.loc[(cr,ps,re)] if rel[cr] == 'semi-natural grasslands' else 0 for cr,ps,re in geodist.x_idx_short['crp']])
+    ])
+    obj = cvxpy.Maximize(
+        cvxpy.sum(cvxpy.multiply(P, x))
+    )
+    
+    # Create problem
+    geodist.problem = cvxpy.Problem(
+        objective = obj,
+        constraints = geodist.problem.constraints
+    )
+
+    return None
+
+def _max_sng_obj_alt2(geodist):
+
+    print('Making max SNG objective (alt. 1) ...')
+
+    for w in ['ani','crp']:
+        for k in geodist.x0_idx[w].unique(0):
+            if k not in ['Semi-natural pastures', 'Semi-natural pastures, wooded', 'Semi-natural pastures, thin soils', 'Semi-natural meadows']:
+                cm.helpers.drop_from_objective(geodist, which=w, key=k)
+
+    return None
+
 def _make_ani_cons(geodist, name, M, b, rel):
     
     from CIBUSmod.optimisation.geo_dist import IndexedMatrix
@@ -168,6 +211,8 @@ def _get_herds_par(herds, attr):
     return res
 
 def _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, factor):
+
+    print('Making CH4 constraint ...')
     
     feed_mgmt.calculate2()
     
@@ -183,6 +228,8 @@ def _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, factor):
 
 def _make_milkmeat_cons(herds, geodist, baseline_milkmeat):
 
+    print('Making milk/meat constraint ...')
+
     # Get milk and meat prod. per defining animal
     meat = _get_herds_par(herds, 'production').xs('meat', level='animal_prod', axis=1).sum(axis=1).xs('cattle', drop_level=False).reindex(geodist.x_idx_short['ani'], fill_value=0)
     milk = _get_herds_par(herds, 'production').xs('milk', level='animal_prod', axis=1).sum(axis=1).xs('cattle', drop_level=False).reindex(geodist.x_idx_short['ani'], fill_value=0)
@@ -192,6 +239,8 @@ def _make_milkmeat_cons(herds, geodist, baseline_milkmeat):
     return None
 
 def _make_orgcon_cons(geodist, baseline_org_per_con):
+
+    print('Making org/con constraint ...')
     
     d = [[(-1/baseline_org_per_con.loc[sp,br] if ps=='organic' else 1) if (sp==sp2) and (br==br2) else 0 for sp,br,ps,_,_ in geodist.x_idx_short['ani']] for sp2,br2 in baseline_org_per_con.index]
     M = pd.DataFrame(
@@ -205,6 +254,8 @@ def _make_orgcon_cons(geodist, baseline_org_per_con):
 
 def _make_beeflamb_cons(herds, geodist, baseline_beeflamb):
 
+    print('Making beef/lamb constraint ...')
+
     # Get beef and lamb prod. per defining animal
     beef = _get_herds_par(herds, 'production').xs('meat', level='animal_prod', axis=1).sum(axis=1).xs('cattle', drop_level=False).reindex(geodist.x_idx_short['ani'], fill_value=0)
     lamb = _get_herds_par(herds, 'production').xs('meat', level='animal_prod', axis=1).sum(axis=1).xs('sheep', drop_level=False).reindex(geodist.x_idx_short['ani'], fill_value=0)
@@ -212,6 +263,13 @@ def _make_beeflamb_cons(herds, geodist, baseline_beeflamb):
     _make_ani_cons(geodist, name='beef/lamb', M=beeflamb, b=0, rel='==')
 
     return None
+
+def _make_sng_cons(geodist, sng_areas, tol=0.001):
+
+    print('Making SNG constraint ...')
+
+    geodist.make_C9(C9_crp = sng_areas * (1-tol), C9_rel = '>=')
+    geodist.make_C7()
 
 def do_run(session, scn_year):
 
@@ -488,6 +546,8 @@ def do_run(session, scn_year):
                         C8_rel = '<='
                     )
                     geodist.make_C7()
+                    # Drop conservation horses from objective
+                    cm.helpers.drop_from_objective(geodist, which='ani', key=('horses','conservation horses'))
                     
                 
                 # Add constraint on CH4 emissions and milk/meat
@@ -500,21 +560,17 @@ def do_run(session, scn_year):
                 if opt_nr == 1:
                     # First we solve while dropping everything from the
                     # obejctive except for semi-natural grasslands
-                    for w in ['ani','crp']:
-                        for k in geodist.x0_idx[w].unique(0):
-                            if k not in ['Semi-natural pastures', 'Semi-natural pastures, wooded', 'Semi-natural pastures, thin soils', 'Semi-natural meadows']:
-                                cm.helpers.drop_from_objective(geodist, which=w, key=k)
+                    _max_sng_obj_alt1(crops, geodist)
                     geodist.solve(apply_solution=False, verbose=True)
                     
                     # Get semi-natural grassland areas from first solution to constrain
                     # semi-natural grassland area per region for second optimization round
-                    tol = 0.001
-                    C8_SNG_P = geodist.x['crp'].loc[['Semi-natural pastures']] * (1-tol)
                     sng_areas = geodist.x['crp'].loc[['Semi-natural pastures', 'Semi-natural pastures, thin soils', 'Semi-natural pastures, wooded']]
                     print(f'SNG area: {sng_areas.sum()/1_000_000:.2f} Mha')
                 elif opt_nr == 2:           
                     # Solve optimisation problem again, this time minimising deviation from current
                     # crop areas and animal numbers
+                    _make_sng_cons(geodist, sng_areas, tol=0.001)
                     for tol in [1e-8, 1e-7, 5e-7, 1e-6, 5e-6, 1e-5]:
                         try:
                             print(f'BarConvTol = {tol:.1e}')
