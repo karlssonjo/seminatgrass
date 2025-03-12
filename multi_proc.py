@@ -286,7 +286,14 @@ def do_run(session, scn_year):
     with open(os.path.join(log_path, f'{scn}_{year}.log'), 'w') as f,\
         redirect_stdout(f), redirect_stderr(f):
 
-        print(session.data_path)
+        # Print path and time-stamp
+        print(
+            session.data_path,
+            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+            '',
+            sep='\n'
+        )
+
 
         tic = time.time()
 
@@ -514,16 +521,21 @@ def do_run(session, scn_year):
             .loc[['Fallow', 'Ley not harvested']]
             C8_FOD = baseline_crp.copy()\
             .loc[['Cereals for fodder', 'Other crops for fodder']]
-            C8_ani = baseline_ani.copy()
+            if 'fix ani' in scn:
+                # All animals fixed
+                C8_ANI = baseline_ani.copy()
+            else:
+                # Pigs, pultry and horses fixed
+                C8_ANI = baseline_ani.copy().loc[['horses','pigs','poultry']]
 
             for opt_nr in [1,2]:
                 print(f'Optimisation round #{opt_nr}')
                 geodist.make(
                     use_cons=[1,2,3,4,5,6,7,8],
                     scale_power=0 if opt_nr == 1 else 0.4,
-                    C8_crp = [ C8_SNG_P,   C8_SNG_PWT,   C8_SNG_M,   C8_FAL,  C8_FOD,   None                                     ],
-                    C8_ani = [ None,       None,         None,       None,    None,     C8_ani.loc[['horses','pigs','poultry']]  ],
-                    C8_rel = [ '>=',       '==',         '==',       '>=',    '<=',     '=='                                     ],
+                    C8_crp = [ C8_SNG_P,   C8_SNG_PWT,   C8_SNG_M,   C8_FAL,  C8_FOD,   None    ],
+                    C8_ani = [ None,       None,         None,       None,    None,     C8_ANI*1.001  ],
+                    C8_rel = [ '>=',       '==',         '==',       '>=',    '<=',     '<='    ],
                     verbose=True
                 )
 
@@ -551,11 +563,13 @@ def do_run(session, scn_year):
                     
                 
                 # Add constraint on CH4 emissions and milk/meat
-                CH4_factor = float(year)/100
-                _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, CH4_factor)
-                _make_milkmeat_cons(herds, geodist, baseline_milkmeat)
-                _make_beeflamb_cons(herds, geodist, baseline_beeflamb)
-                _make_orgcon_cons(geodist, baseline_org_per_con)
+                if not 'fix ani' in scn:
+                    CH4_factor = float(year)/100
+                    _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, CH4_factor)
+                if not 'fix ani' in scn:
+                    _make_milkmeat_cons(herds, geodist, baseline_milkmeat)
+                    _make_beeflamb_cons(herds, geodist, baseline_beeflamb)
+                    _make_orgcon_cons(geodist, baseline_org_per_con)
 
                 if opt_nr == 1:
                     # First we solve while dropping everything from the
