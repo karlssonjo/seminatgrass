@@ -129,6 +129,7 @@ def _max_sng_obj_alt1(crops, geodist):
 
     print('Making max SNG objective (alt. 1) ...')
 
+    # yields = crops.data_attr.get('production').sum(axis=1)
     yields = crops.data_attr.get('harvest')
 
     geodist.define_cvx_problem()
@@ -165,7 +166,7 @@ def _max_sng_obj_alt2(geodist):
 
     return None
 
-def _make_ani_cons(geodist, name, M, b, rel):
+def _make_cons(geodist, name, M, b, rel, type):
     
     from CIBUSmod.optimisation.geo_dist import IndexedMatrix
 
@@ -176,8 +177,11 @@ def _make_ani_cons(geodist, name, M, b, rel):
 
     # Create A matrix
     M = scipy.sparse.csc_matrix(M)
-    Z = scipy.sparse.csc_matrix((M.shape[0],len(geodist.x_idx_short['crp']))) # Zero matrix
-    A = scipy.sparse.hstack([M,Z], format='csc')
+    Z = scipy.sparse.csc_matrix((M.shape[0],len(geodist.x_idx_short['crp' if type == 'ani' else 'ani']))) # Zero matrix
+    if type == 'ani':
+        A = scipy.sparse.hstack([M,Z], format='csc')
+    elif type == 'crp':
+        A = scipy.sparse.hstack([Z,M], format='csc')
     A = IndexedMatrix(
         matrix=A,
         row_idx=row_idx,
@@ -193,6 +197,11 @@ def _make_ani_cons(geodist, name, M, b, rel):
     }})
 
     return None
+
+def _make_ani_cons(geodist, name, M, b, rel):
+    _make_cons(geodist, name, M, b, rel, type='ani')
+def _make_crp_cons(geodist, name, M, b, rel):
+    _make_cons(geodist, name, M, b, rel, type='crp')
 
 def _get_herds_par(herds, attr):
     
@@ -266,10 +275,30 @@ def _make_beeflamb_cons(herds, geodist, baseline_beeflamb):
 
 def _make_sng_cons(geodist, sng_areas, tol=0.001):
 
-    print('Making SNG constraint ...')
+    print('Making SNG area constraint for optimisation round #2 ...')
 
     geodist.make_C9(C9_crp = sng_areas * (1-tol), C9_rel = '>=')
     geodist.make_C7()
+
+def _adjust_max_sng_in_grazing(feed_mgmt, factor=0.8):
+    adjudsted = feed_mgmt.par.data.xs('max_crop_in_crop_prod', level='parameter', drop_level=False) * factor
+    feed_mgmt.par.data.update(adjudsted)
+    print(f'Maximum share of semi-natural grasslands in grazing were adjusted with the factor {factor} to:')
+    print(feed_mgmt.par.data.xs('max_crop_in_crop_prod', level='parameter', drop_level=False).dropna())
+
+def _make_sng_rel_cons(geodist, baseline_crp):
+    print('Making constraint keeping relative areas of SNG types constant ...')
+    c1 = 'Semi-natural pastures'
+    M_rows = []
+    for c2 in ['Semi-natural pastures, thin soils', 'Semi-natural pastures, wooded']:
+        rel = baseline_crp.loc[c2].groupby('region').sum() / baseline_crp.loc[c1].groupby('region').sum()
+        for reg in rel.index:
+            M_rows.append(pd.Series(
+                [(1 if cr==c1 else (-99999 if rel.loc[re]==0 else -1/rel.loc[re]) if cr==c2 else 0) if re==reg else 0 for cr, ps, re in geodist.x_idx_short['crp']],
+                geodist.x_idx_short['crp']
+            ).rename((c2,reg)))
+    M = pd.concat(M_rows,axis=1).T.rename_axis(['crop','region'])
+    _make_crp_cons(geodist, name=c2, M=M, b=np.zeros(len(M)), rel='==')
 
 def do_run(session, scn_year):
 
@@ -445,6 +474,13 @@ def do_run(session, scn_year):
             year = year
         )
 
+        # Adjust maximum share of semi-natural grasslands in grazing
+        geodist.par.clear()
+        _adjust_max_sng_in_grazing(
+            feed_mgmt,
+            factor=geodist.par.get('max_sng_adj')[0]
+        )
+
         # Get region attributes
         regions.calculate(verbose=True)
 
@@ -478,9 +514,19 @@ def do_run(session, scn_year):
                     # Get baseline milk/meat
                     prod = session.get_attr('A', 'prod', ['species', 'animal_prod'], scn='BL').iloc[0]
                     baseline_milkmeat = prod[('cattle','milk')] / prod[('cattle','meat')]
-                    # Get baseline beef/lamb
-                    prod = session.get_attr('A', 'prod', ['species','animal_prod'], scn='BL').iloc[0]
-                    baseline_beeflamb = prod[('cattle','meat')] / prod[('sheep','meat')]
+                    # Get beef/lamb
+                    if session[scn]['scenario_workbooks'] is not None and 'WIN_LAMB' in session[scn]['scenario_workbooks']:
+                        # Beef/lamb based on consumption
+                        cons = session.get_attr('d','food_demand',['food'], scn='BL').iloc[0]
+                        # Get conversion factors retail weight --> CW
+                        demand.par.clear()
+                        beef_cf = demand.par.get('conv_factor_main', food='Bovine meat and products', species='cattle', animal_prod='meat')[0]/100
+                        lamb_cf = demand.par.get('conv_factor_main', food='Mutton/goat meat', species='sheep', animal_prod='meat')[0]/100
+                        baseline_beeflamb = (cons.loc['Bovine meat and products'] / beef_cf) / (cons.loc['Mutton/goat meat'] / lamb_cf)
+                    else:
+                        # Beef/lamb based on baseline production
+                        prod = session.get_attr('A', 'prod', ['species','animal_prod'], scn='BL').iloc[0]
+                        baseline_beeflamb = prod[('cattle','meat')] / prod[('sheep','meat')]
                     # Get baseline org/con
                     heads = session.get_attr('G','x_ani',['species','breed','prod_system'], scn='BL').iloc[0].loc[['cattle','sheep']]
                     baseline_org_per_con = (heads.xs('organic', level='prod_system') / heads.xs('conventional', level='prod_system'))
@@ -507,35 +553,75 @@ def do_run(session, scn_year):
                 .loc[(slice(None),['pigs','poultry'],slice(None))]
             )
 
-            # Set maximum cropland and greenhouse area to baseline levels
-            regions.data_attr.get('max_land_use').update(baseline_lu.loc[:,['cropland','greenhouse']])
+            # Set x0 crops and animals to baseline levels
+            regions.data_attr.get('x0_crops').update(baseline_crp)
+            regions.data_attr.get('x0_animals').update(baseline_ani.groupby(['species','breed','prod_system','region']).sum())
 
-            # Baseline Semi-natural grassland areas
-            C8_SNG_P = baseline_crp.copy()\
-            .loc[['Semi-natural pastures']]
-            C8_SNG_PWT = baseline_crp.copy()\
-            .loc[['Semi-natural pastures, wooded','Semi-natural pastures, thin soils']]
-            C8_SNG_M = baseline_crp.copy()\
-            .loc[['Semi-natural meadows']]
-            C8_FAL = baseline_crp.copy()\
-            .loc[['Fallow', 'Ley not harvested']]
-            C8_FOD = baseline_crp.copy()\
-            .loc[['Cereals for fodder', 'Other crops for fodder']]
-            if 'fix ani' in scn:
-                # All animals fixed
-                C8_ANI = baseline_ani.copy()
-            else:
-                # Pigs, pultry and horses fixed
-                C8_ANI = baseline_ani.copy().loc[['horses','pigs','poultry']]
+            # Set maximum cropland and greenhouse area to baseline levels
+            geodist.par.clear()
+            regions.data_attr.get('max_land_use').update(
+                baseline_lu.loc[:,['cropland','greenhouse']] * 
+                geodist.par.get('max_cropland_adj')[0]
+            )
+
+            # Create empty lists for C8 constraints
+            C8_CRP = []
+            C8_ANI = []
+            C8_REL = []
+
+            # Semi-natural pastures >= baseline areas for scenarios where it is possible to increase areas
+            # otherwise apply iteratively found adjustment factor
+            bl_sng_adj = {
+                ('MAX_CUR','70') : 0.89,
+                ('WIN_LAMB','70') : 0.98,
+                ('CUL_COWS','70') : 0.94,
+                ('DRY_COWS','70') : 0.94,
+                ('STEERS','70') : 0.94,
+                ('NAT_HORSES','70') : 0.98
+            }
+            C8_CRP += [baseline_crp.copy().loc[['Semi-natural pastures']] * bl_sng_adj.get((scn,year),1)]
+            C8_ANI += [None]
+            C8_REL += ['>=']
+
+            # # Semi-natural pastures, thin soils and wooded == baseline areas
+            # C8_CRP += [baseline_crp.copy().loc[['Semi-natural pastures, wooded','Semi-natural pastures, thin soils']]]
+            # C8_ANI += [None]
+            # C8_REL += ['==']
+
+            # Semi-natural meadows == baseline areas
+            C8_CRP += [baseline_crp.copy().loc[['Semi-natural meadows']]]
+            C8_ANI += [None]
+            C8_REL += ['==']
+
+            # Fallow areas >= baseline areas
+            C8_CRP += [baseline_crp.copy().loc[['Fallow', 'Ley not harvested']]]
+            C8_ANI += [None]
+            C8_REL += ['>=']
+
+            # Creals and other crops for fodder <= baseline areas
+            C8_CRP += [baseline_crp.copy().loc[['Cereals for fodder', 'Other crops for fodder']]]
+            C8_ANI += [None]
+            C8_REL += ['<=']
+
+            # Horses, pigs and poultry == baseline numbers
+            C8_CRP += [None]
+            C8_ANI += [baseline_ani.copy().loc[['horses','pigs','poultry']]]
+            C8_REL += ['==']
+
+            if 'FIX_ANI' in scn:
+                # Cattle and sheep <= baseline numbers * factor
+                C8_CRP += [None]
+                C8_ANI = baseline_ani.copy().loc[['cattle','sheep']] * (1.001 if 'MAX_CUR' in scn else 0.999)
+                C8_REL += ['<=' if 'MAX_CUR' in scn else '>=']
 
             for opt_nr in [1,2]:
                 print(f'Optimisation round #{opt_nr}')
                 geodist.make(
                     use_cons=[1,2,3,4,5,6,7,8],
                     scale_power=0 if opt_nr == 1 else 0.4,
-                    C8_crp = [ C8_SNG_P,   C8_SNG_PWT,   C8_SNG_M,   C8_FAL,  C8_FOD,   None    ],
-                    C8_ani = [ None,       None,         None,       None,    None,     C8_ANI*1.001  ],
-                    C8_rel = [ '>=',       '==',         '==',       '>=',    '<=',     '<='    ],
+                    C8_crp = C8_CRP,
+                    C8_ani = C8_ANI,
+                    C8_rel = C8_REL,
                     verbose=True
                 )
 
@@ -563,13 +649,18 @@ def do_run(session, scn_year):
                     
                 
                 # Add constraint on CH4 emissions and milk/meat
-                if not 'fix ani' in scn:
-                    CH4_factor = float(year)/100
-                    _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, CH4_factor)
-                if not 'fix ani' in scn:
+                CH4_factor = float(year)/100
+                _make_CH4_cons(herds, geodist, feed_mgmt, baseline_CH4, CH4_factor)
+                if not 'FIX_ANI' in scn:
                     _make_milkmeat_cons(herds, geodist, baseline_milkmeat)
                     _make_beeflamb_cons(herds, geodist, baseline_beeflamb)
                     _make_orgcon_cons(geodist, baseline_org_per_con)
+
+                # Add contraint on relative areas of different types of SNG
+                baseline_snp = baseline_crp.loc[['Semi-natural pastures','Semi-natural pastures, thin soils', 'Semi-natural pastures, wooded']]
+                if 'MORE_WOODED' in scn:
+                    baseline_snp.loc[['Semi-natural pastures, wooded']] *= geodist.par.get('wooded_factor')[0]
+                _make_sng_rel_cons(geodist, baseline_snp)
 
                 if opt_nr == 1:
                     # First we solve while dropping everything from the
