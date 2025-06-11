@@ -157,12 +157,30 @@ def _max_sng_obj_alt1(crops, geodist):
 
 def _max_sng_obj_alt2(geodist):
 
-    print('Making max SNG objective (alt. 1) ...')
+    import cvxpy
 
-    for w in ['ani','crp']:
-        for k in geodist.x0_idx[w].unique(0):
-            if k not in ['Semi-natural pastures', 'Semi-natural pastures, wooded', 'Semi-natural pastures, thin soils', 'Semi-natural meadows']:
-                cm.helpers.drop_from_objective(geodist, which=w, key=k)
+    print('Making max SNG objective (alt. 2) ...')
+
+    geodist.define_cvx_problem()
+
+    # Get x variable
+    x = geodist.problem.variables()[0]
+
+    # Create objective
+    rel = cm.ParameterRetriever.get_rel('crop','land_use')
+    P = np.concatenate([
+        np.zeros(len(geodist.x_idx_short['ani'])),
+        np.array([1 if rel[cr] == 'semi-natural grasslands' else 0 for cr,ps,re in geodist.x_idx_short['crp']])
+    ])
+    obj = cvxpy.Maximize(
+        cvxpy.sum(cvxpy.multiply(P, x))
+    )
+    
+    # Create problem
+    geodist.problem = cvxpy.Problem(
+        objective = obj,
+        constraints = geodist.problem.constraints
+    )
 
     return None
 
@@ -665,7 +683,10 @@ def do_run(session, scn_year):
                 if opt_nr == 1:
                     # First we solve while dropping everything from the
                     # obejctive except for semi-natural grasslands
-                    _max_sng_obj_alt1(crops, geodist)
+                    if 'SNG_OBJ_ALT2' not in scn:
+                        _max_sng_obj_alt1(crops, geodist)
+                    else:
+                        _max_sng_obj_alt2(geodist)
                     geodist.solve(apply_solution=False, verbose=True)
                     
                     # Get semi-natural grassland areas from first solution to constrain
