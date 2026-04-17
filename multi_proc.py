@@ -601,11 +601,6 @@ def do_run(session, scn_year):
             C8_ANI += [None]
             C8_REL += ['>=']
 
-            # # Semi-natural pastures, thin soils and wooded == baseline areas
-            # C8_CRP += [baseline_crp.copy().loc[['Semi-natural pastures, wooded','Semi-natural pastures, thin soils']]]
-            # C8_ANI += [None]
-            # C8_REL += ['==']
-
             # Semi-natural meadows == baseline areas
             C8_CRP += [baseline_crp.copy().loc[['Semi-natural meadows']]]
             C8_ANI += [None]
@@ -627,10 +622,12 @@ def do_run(session, scn_year):
             C8_REL += ['==']
 
             if 'FIX_ANI' in scn:
-                # Cattle and sheep <= baseline numbers * factor
+                # Cattle and sheep <= (baseline numbers + abs_tol) * (1+rel_tol)
+                abs_tol = 1e-4
+                rel_tol = 1e-6
                 C8_CRP += [None]
-                C8_ANI = baseline_ani.copy().loc[['cattle','sheep']] * (1.001 if 'MAX_CUR' in scn else 0.999)
-                C8_REL += ['<=' if 'MAX_CUR' in scn else '>=']
+                C8_ANI += [(baseline_ani.copy().loc[['cattle','sheep']] + abs_tol) * (1+rel_tol)]
+                C8_REL += ['<=']
 
             for opt_nr in [1,2]:
                 print(f'Optimisation round #{opt_nr}')
